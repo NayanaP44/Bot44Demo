@@ -1,3 +1,5 @@
+// app.js
+
 // -----------------------------
 // Mock Tickets (generic dataset)
 // -----------------------------
@@ -112,6 +114,142 @@ function toast(msg) {
   setTimeout(() => el.classList.add("hidden"), 2200);
 }
 
+/**
+ * Leadership-demo-friendly summarizer (deterministic, no model calls)
+ * Generates structured summaries for User Creation / How-To / Bug / Access.
+ */
+function summarizeTicket(ticket) {
+  const subject = ticket.subject || "";
+  const events = ticket.events || [];
+  const first = events[0]?.text || "";
+  const last = events[events.length - 1]?.text || "";
+  const requester = ticket.requester || {};
+  const intent = safeLower(ticket.classification?.intent || "");
+
+  const text = `${subject}\n${first}\n${last}`;
+
+  // Common extraction
+  const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i) || [])[0] || "";
+  const browser = (text.match(/browser:\s*([A-Za-z0-9 .]+)/i) || [])[1]?.trim() || "";
+  const started = (text.match(/started\s+(today|yesterday|on\s+\w+|\d{4}-\d{2}-\d{2})/i) || [])[0] || "";
+
+  // User creation extraction
+  const role = (text.match(/role:\s*([A-Za-z ]+)/i) || [])[1]?.trim() || "";
+  const region = (text.match(/region:\s*([A-Za-z0-9_-]+)/i) || [])[1]?.trim() || "";
+  const manager = (text.match(/manager:\s*([A-Za-z ]+)/i) || [])[1]?.trim() || "";
+  const costCenter = (text.match(/cost center:\s*([A-Za-z0-9_-]+)/i) || [])[1]?.trim() || "";
+
+  // Access extraction
+  const feature = (text.match(/enable\s+([A-Za-z0-9 _-]+)/i) || [])[1]?.trim() || "";
+  const permissionUser = email || (text.match(/for\s+([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i) || [])[1] || "";
+
+  const header = ["AI Summary", "──────────"].join("\n");
+
+  if (intent.includes("user creation")) {
+    return [
+      header,
+      "Customer requests creating a new STS user for onboarding.",
+      "",
+      `Requester: ${requester.name || "—"} • Org: ${requester.org || "—"}`,
+      `Requested user: ${email || "—"}`,
+      `Role: ${role || "—"}   •   Region: ${region || "—"}`,
+      `Manager: ${manager || "—"}   •   Cost center: ${costCenter || "—"}`,
+      "",
+      "Risk / Guardrails:",
+      "• Admin role may require approval workflow",
+      "",
+      "Next actions:",
+      "• Confirm missing fields (manager email if approvals apply)",
+      "• Submit to Access Ops workflow",
+      "• Confirm completion + share request ID"
+    ].join("\n");
+  }
+
+  if (intent.includes("how-to") || intent.includes("how to") || intent.includes("how-to assistance")) {
+    const ask =
+      subject ||
+      (first.length > 160 ? first.slice(0, 160) + "…" : first) ||
+      "—";
+
+    return [
+      header,
+      "Customer is asking for guidance on how to complete a task in the product.",
+      "",
+      `Requester: ${requester.name || "—"} • Org: ${requester.org || "—"}`,
+      `Request: ${ask}`,
+      "",
+      "Support response plan:",
+      "• Provide exact navigation steps + relevant KB link",
+      "• Confirm permissions needed (export/download access)",
+      "• Ask for UI screenshot if they can’t find the option"
+    ].join("\n");
+  }
+
+  if (intent.includes("bug") || intent.includes("incident") || intent.includes("bug report")) {
+    const impact = subject || "Issue reported by customer";
+
+    return [
+      header,
+      "Customer reports a product issue impacting usage.",
+      "",
+      `Requester: ${requester.name || "—"} • Org: ${requester.org || "—"}`,
+      `Impact: ${impact}`,
+      `Environment: ${browser || "—"}`,
+      `Timing: ${started || "—"}`,
+      "",
+      "Investigation checklist:",
+      "• Collect screenshot + console errors",
+      "• Request HAR file (if possible)",
+      "• Check feature flags / recent releases",
+      "",
+      "Next actions:",
+      "• Acknowledge impact + set update cadence",
+      "• Route to owning product team with artifacts"
+    ].join("\n");
+  }
+
+  if (intent.includes("access") || intent.includes("permissions")) {
+    return [
+      header,
+      "Customer requests access/permissions change.",
+      "",
+      `Requester: ${requester.name || "—"} • Org: ${requester.org || "—"}`,
+      `Target user: ${permissionUser || "—"}`,
+      `Requested access: ${feature || "—"}`,
+      "",
+      "Guardrails:",
+      "• Verify requester authorization / approvals if needed",
+      "• Confirm the correct permission set / role template",
+      "",
+      "Next actions:",
+      "• Validate user + org mapping",
+      "• Apply permission set and confirm re-login if required",
+      "• Confirm completion to requester"
+    ].join("\n");
+  }
+
+  // Generic fallback
+  const firstShort = first ? (first.length > 220 ? first.slice(0, 220) + "…" : first) : "—";
+  const lastShort = last && last !== first ? (last.length > 220 ? last.slice(0, 220) + "…" : last) : "";
+
+  return [
+    header,
+    "Customer support request captured.",
+    "",
+    `Requester: ${requester.name || "—"} • Org: ${requester.org || "—"}`,
+    `Subject: ${subject || "—"}`,
+    "",
+    "Key details:",
+    `• ${firstShort}`,
+    lastShort ? `• Latest: ${lastShort}` : "",
+    "",
+    "Next actions:",
+    "• Confirm missing context",
+    "• Recommend KB / runbook",
+    "• Draft customer response"
+  ].filter(Boolean).join("\n");
+}
+
 // -----------------------------
 // Observe Logs
 // -----------------------------
@@ -201,14 +339,20 @@ function renderTicketSummary() {
 
   const requester = `${ACTIVE.requester.name} (${ACTIVE.requester.email}) • Org: ${ACTIVE.requester.org}`;
   const timeline = ACTIVE.events.map(e => `• ${new Date(e.ts).toLocaleString()} — ${e.by}: ${e.text}`).join("\n");
+  const aiSummary = summarizeTicket(ACTIVE);
 
   $("ticketSummary").innerHTML = `
-    <div><b>Issue Summary</b></div>
+    <div><b>Ticket Summary</b></div>
     <div class="muted" style="margin-top:6px;">${escapeHtml(ACTIVE.subject)}</div>
     <div class="muted" style="margin-top:6px;">${escapeHtml(requester)}</div>
 
-    <div style="margin-top:10px;"><b>Key Events</b></div>
-    <pre style="margin-top:8px; border:1px solid #E3E8F2; border-radius:14px; padding:10px; background:#fff; overflow:auto; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;">${escapeHtml(timeline)}</pre>
+    <div style="margin-top:10px;"><b>AI Summary</b></div>
+    <pre style="margin-top:8px; border:1px solid #E3E8F2; border-radius:14px; padding:10px; background:#fff; overflow:auto; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;">${escapeHtml(aiSummary)}</pre>
+
+    <details style="margin-top:10px;">
+      <summary class="muted" style="cursor:pointer;">Show full timeline</summary>
+      <pre style="margin-top:8px; border:1px solid #E3E8F2; border-radius:14px; padding:10px; background:#fff; overflow:auto; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;">${escapeHtml(timeline)}</pre>
+    </details>
   `;
 
   logEvent({ type: "AI", message: "Generated ticket summary + classification (mock)", meta: { ...c } });
@@ -249,7 +393,9 @@ function runSeeker() {
     ? "• Confirm required fields (name/email/role/region)\n• Mention approval process for Admin\n• Provide confirmation + requestId"
     : safeLower(intent).includes("bug")
       ? "• Acknowledge impact\n• Gather artifacts (HAR/console/screenshot)\n• Provide workaround if available\n• Set expectation + next update"
-      : "• Acknowledge request\n• Provide steps\n• Ask for confirmation";
+      : safeLower(intent).includes("access")
+        ? "• Confirm target user email\n• Validate authorization/approvals\n• Apply permission set\n• Ask user to re-login"
+        : "• Acknowledge request\n• Provide steps\n• Ask for confirmation";
 
   const items = [
     {
@@ -387,8 +533,7 @@ function askMe(question) {
   let ans = `Grounded on the current ticket:\n${basicFacts}\n\n`;
 
   if (q.includes("summarize") || q.includes("summary")) {
-    ans += `Summary:\n- ${ACTIVE.events[0]?.text || "No events"}\n`;
-    if (ACTIVE.events.length > 1) ans += `- Latest: ${ACTIVE.events[ACTIVE.events.length - 1].text}\n`;
+    ans += summarizeTicket(ACTIVE);
     return ans;
   }
 
@@ -409,6 +554,15 @@ function askMe(question) {
 2) Browser + version? Any extensions?
 3) HAR file + console logs?
 4) Does it reproduce for other users?`;
+      return ans;
+    }
+    if (safeLower(intent).includes("access")) {
+      ans +=
+`Suggested clarifying questions:
+1) Confirm target user email + org
+2) Which feature/role is needed?
+3) Is there an approval required?
+4) Any deadlines / urgency?`;
       return ans;
     }
     ans +=
@@ -462,6 +616,15 @@ To help us investigate, please share:
 3) HAR file + console logs (if possible)
 
 Once received, we’ll continue troubleshooting.`;
+  } else if (intent.includes("access") || intent.includes("permissions")) {
+    body += `
+
+To proceed, please confirm:
+1) Target user email
+2) Required role/permission set
+3) Any approvals needed (if applicable)
+
+Once confirmed, we’ll apply the access update and ask the user to re-login if required.`;
   } else {
     body += `
 
@@ -542,16 +705,33 @@ function setActiveTicket(key) {
 }
 
 /* =========================================================
-   ✅ NEW: Zendesk Live Ticket Integration (no admin)
+   Zendesk Live Ticket Integration (no admin)
    Receives ticket content via p44-zendesk-bridge.js CustomEvent
    ========================================================= */
 function classifyFromText(text) {
   const t = safeLower(text);
-  if (t.includes("create") && t.includes("user")) return { category:"User Assistance", intent:"User Creation", sentiment:"Neutral", priority:"Medium" };
-  if (t.includes("export") || t.includes("how do i") || t.includes("where do i")) return { category:"User Assistance", intent:"How-To Assistance", sentiment:"Neutral", priority:"Low" };
-  if (t.includes("blank") || t.includes("error") || t.includes("bug") || t.includes("not working")) return { category:"Incident", intent:"Bug Report", sentiment:"Neutral", priority:"High" };
-  if (t.includes("permission") || t.includes("enable") || t.includes("access")) return { category:"User Assistance", intent:"Access/Permissions", sentiment:"Neutral", priority:"Low" };
-  return { category:"User Assistance", intent:"General Support", sentiment:"Neutral", priority:"Medium" };
+
+  const hasUser = t.includes("user") || t.includes("account") || t.includes("login");
+  const userCreateVerb =
+    t.includes("create") || t.includes("add") || t.includes("onboard") || t.includes("provision") || t.includes("set up");
+
+  const hasAccessVerb =
+    t.includes("permission") || t.includes("permissions") || t.includes("enable") || t.includes("access") || t.includes("role");
+
+  const bugSignals =
+    t.includes("bug") || t.includes("error") || t.includes("blank") || t.includes("not working") || t.includes("fails") || t.includes("issue");
+
+  const howToSignals =
+    t.includes("how do i") || t.includes("how to") || t.includes("where do i") || t.includes("steps") || t.includes("export");
+
+  const priority = bugSignals ? "High" : (t.includes("urgent") || t.includes("asap") ? "High" : "Medium");
+
+  if (hasUser && userCreateVerb) return { category:"User Assistance", intent:"User Creation", sentiment:"Neutral", priority };
+  if (bugSignals) return { category:"Incident", intent:"Bug Report", sentiment:"Neutral", priority:"High" };
+  if (hasAccessVerb) return { category:"User Assistance", intent:"Access/Permissions", sentiment:"Neutral", priority:"Low" };
+  if (howToSignals) return { category:"User Assistance", intent:"How-To Assistance", sentiment:"Neutral", priority:"Low" };
+
+  return { category:"User Assistance", intent:"General Support", sentiment:"Neutral", priority };
 }
 
 function ensureLiveOption(label) {
@@ -594,11 +774,9 @@ window.addEventListener("P44_ZD_TICKET_EVENT", (e) => {
     classification: klass
   };
 
-  // Optional: also set side convo / jira mocks empty for live
   SIDE_CONVO_BY_TICKET[key] = SIDE_CONVO_BY_TICKET[key] || [];
   JIRA_BY_TICKET[key] = JIRA_BY_TICKET[key] || [];
 
-  // Switch UI to live ticket
   $("ticketSelect").value = key;
   setActiveTicket(key);
 
